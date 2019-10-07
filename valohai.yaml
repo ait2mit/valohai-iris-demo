@@ -1,0 +1,117 @@
+- step:
+    name: iris data processing (Genworth)
+    image: tensorflow/tensorflow:1.13.1-gpu-py3
+    command: python preprocess.py
+    inputs:
+      - name: training-set-images
+        default: https://valohaidemo.blob.core.windows.net/mnist/train-images-idx3-ubyte.gz
+      - name: training-set-labels
+        default: https://valohaidemo.blob.core.windows.net/mnist/train-labels-idx1-ubyte.gz
+      - name: test-set-images
+        default: https://valohaidemo.blob.core.windows.net/mnist/t10k-images-idx3-ubyte.gz
+      - name: test-set-labels
+        default: https://valohaidemo.blob.core.windows.net/mnist/t10k-labels-idx1-ubyte.gz
+
+- step:
+    name: Model Training (Genworth)
+    image: tensorflow/tensorflow:1.13.1-gpu-py3
+    command: python train.py {parameters}
+    parameters:
+      - name: max_steps
+        pass-as: --max_steps={v}
+        description: Number of steps to run the trainer
+        type: integer
+        default: 300
+      - name: learning_rate
+        pass-as: --learning_rate={v}
+        description: Initial learning rate
+        type: float
+        default: 0.001
+      - name: dropout
+        pass-as: --dropout={v}
+        description: Keep probability for training dropout
+        type: float
+        default: 0.9
+      - name: batch_size
+        pass-as: --batch_size={v}
+        description: Training batch size (larger batches are usually more efficient on GPUs)
+        type: integer
+        default: 200
+    inputs:
+      - name: training-set-images
+        default: https://valohaidemo.blob.core.windows.net/mnist/train-images-idx3-ubyte.gz
+      - name: training-set-labels
+        default: https://valohaidemo.blob.core.windows.net/mnist/train-labels-idx1-ubyte.gz
+      - name: test-set-images
+        default: https://valohaidemo.blob.core.windows.net/mnist/t10k-images-idx3-ubyte.gz
+      - name: test-set-labels
+        default: https://valohaidemo.blob.core.windows.net/mnist/t10k-labels-idx1-ubyte.gz
+
+- step:
+    name: Model Prediction (Genworth)
+    environment: azure-westeurope-f2sv2
+    image: tensorflow/tensorflow:1.13.1-py3
+    command:
+      - pip install --disable-pip-version-check --quiet -r requirements.txt
+      - python batch_inference.py --model-pb=/valohai/inputs/model/model.pb --input-root=/valohai/inputs/images
+    inputs:
+      - name: model
+      - name: images
+        default:
+          - https://valohaidemo.blob.core.windows.net/mnist/four-inverted.png
+          - https://valohaidemo.blob.core.windows.net/mnist/five-inverted.png
+          - https://valohaidemo.blob.core.windows.net/mnist/five-normal.jpg
+
+- step:
+    name: Model Validation (Genworth)
+    image: tensorflow/tensorflow:1.13.1-gpu-py3
+    command:
+      - pwd
+      - ls -la
+      - nvidia-smi
+      - python --version
+      - nvcc --version | grep release
+      - cat /usr/include/x86_64-linux-gnu/cudnn_v*.h | grep CUDNN_MAJOR -A 2
+
+- pipeline:
+    name: Iris-Model Development (Genworth)
+    nodes:
+      - name: preprocess
+        type: execution
+        step: Preprocess dataset (MNIST)
+      - name: train
+        type: execution
+        step: Train model (MNIST)
+        override:
+          image: tensorflow/tensorflow:1.13.1-py3
+          inputs:
+          - name: training-set-images
+          - name: training-set-labels
+          - name: test-set-images
+          - name: test-set-labels
+      - name: evaluate
+        type: execution
+        step: Batch inference (MNIST)
+    edges:
+      - [preprocess.output.*train-images*, train.input.training-set-images]
+      - [preprocess.output.*train-labels*, train.input.training-set-labels]
+      - [preprocess.output.*test-images*, train.input.test-set-images]
+      - [preprocess.output.*test-labels*, train.input.test-set-labels]
+      - [train.output.model*, evaluate.input.model]
+
+- endpoint:
+    name: greet
+    image: python:3.6
+    port: 8000
+    server-command: python -m wsgiref.simple_server
+    description: test the serving environment
+
+- endpoint:
+    name: predict-digit
+    description: predict digits from image inputs ("file" parameter)
+    image: tensorflow/tensorflow:1.13.1-py3
+    wsgi: predict_wsgi:predict_wsgi
+    files:
+      - name: model
+        description: Model output file from TensorFlow
+        path: model.pb
